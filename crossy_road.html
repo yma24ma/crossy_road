@@ -1,0 +1,1468 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crossy Road — Canvas</title>
+  <style>
+    html, body {
+      margin: 0;
+      height: 100%;
+      background: #0b0f14;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+      -webkit-touch-callout: none;
+      touch-action: none;
+    }
+    #wrap { position: fixed; inset: 0; display: grid; place-items: center; }
+    canvas { width: 100vw; height: 100vh; display: block; }
+    .hud {
+      position: fixed;
+      left: 14px;
+      top: 12px;
+      color: rgba(255,255,255,0.92);
+      font-weight: 650;
+      letter-spacing: 0.2px;
+      text-shadow: 0 1px 0 rgba(0,0,0,0.35);
+      pointer-events: none;
+    }
+    .hud .sub { font-weight: 520; opacity: 0.85; margin-top: 4px; font-size: 12px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.10);
+      padding: 8px 10px;
+      border-radius: 14px;
+      box-shadow: 0 12px 28px rgba(0,0,0,0.35);
+      backdrop-filter: blur(6px);
+    }
+    .center {
+      position: fixed;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+    }
+    .panel {
+      width: min(520px, calc(100vw - 32px));
+      background: rgba(10, 14, 18, 0.72);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 18px;
+      padding: 18px 18px;
+      color: rgba(255,255,255,0.92);
+      box-shadow: 0 22px 60px rgba(0,0,0,0.55);
+      backdrop-filter: blur(10px);
+    }
+    .panel h1 {
+      margin: 0 0 8px 0;
+      font-size: 18px;
+      letter-spacing: 0.3px;
+    }
+    .panel p {
+      margin: 0;
+      opacity: 0.9;
+      line-height: 1.35;
+      font-size: 13px;
+    }
+    .panel .row {
+      display: flex;
+      gap: 10px;
+      margin-top: 12px;
+      flex-wrap: wrap;
+      opacity: 0.92;
+      font-size: 12px;
+    }
+    .key { display: inline-flex; gap: 6px; align-items: center; padding: 6px 10px; border-radius: 12px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.10); }
+    .k { font-weight: 750; opacity: 0.95; }
+    .muted { opacity: 0.78; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="c"></canvas>
+  </div>
+
+  <div class="hud">
+    <div class="badge">
+      <div>Score: <span id="score">0</span></div>
+      <div class="muted">Best: <span id="best">0</span></div>
+    </div>
+    <div class="sub">Arrow/WASD • Swipe • R to restart • Enter to start</div>
+  </div>
+
+  <div class="center" id="overlay" aria-hidden="false">
+    <div class="panel" id="panel">
+      <h1>Crossy Road (Canvas)</h1>
+      <p>Hop forward forever. Avoid cars and trains. Don’t fall in the river — stand on logs to cross.</p>
+      <div class="row">
+        <span class="key"><span class="k">Arrows</span><span class="muted">/ WASD</span> move</span>
+        <span class="key"><span class="k">Swipe</span> move</span>
+        <span class="key"><span class="k">R</span> restart</span>
+        <span class="key"><span class="k">Enter</span> start</span>
+      </div>
+      <p style="margin-top:12px; opacity:0.8; font-size:12px;">Tip: You can move sideways or backward to dodge. Logs carry you, so keep your balance.</p>
+    </div>
+  </div>
+
+<script>
+(() => {
+  // ===== Utilities =====
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const rand = (a, b) => a + Math.random() * (b - a);
+  const randi = (a, b) => Math.floor(rand(a, b + 1));
+  const choice = (arr) => arr[(Math.random() * arr.length) | 0];
+  const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
+
+  // ===== Canvas setup =====
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+  const $score = document.getElementById('score');
+  const $best = document.getElementById('best');
+  const $overlay = document.getElementById('overlay');
+  const $panel = document.getElementById('panel');
+
+  let DPR = 1;
+  let W = 0, H = 0;
+
+  function resize() {
+    DPR = Math.max(1, Math.min(2.5, window.devicePixelRatio || 1));
+    W = Math.floor(window.innerWidth * DPR);
+    H = Math.floor(window.innerHeight * DPR);
+    canvas.width = W;
+    canvas.height = H;
+    ctx.imageSmoothingEnabled = true;
+  }
+  window.addEventListener('resize', resize, { passive: true });
+  resize();
+
+  // ===== Game constants =====
+  const WORLD_HALF = 7; // playable x range: [-7, +7]
+
+  const TILE_BASE = 46;      // will be scaled to screen
+  const HEIGHT_UNIT = 28;    // visual height scaling
+
+  const COLORS = {
+    bg1: '#0b0f14',
+    bg2: '#0c1726',
+
+    grassTop: '#3faa4a',
+    grassSide: '#2f7e36',
+    grassEdge: '#2a6f31',
+
+    roadTop: '#2a2d33',
+    roadSide: '#1f2227',
+    roadEdge: '#171a1f',
+
+    riverTop: '#1f5c9b',
+    riverSide: '#15406c',
+    riverEdge: '#12385e',
+
+    railTop: '#2b2a26',
+    railSide: '#1e1d1a',
+    railEdge: '#161512',
+
+    line: 'rgba(255,255,255,0.18)',
+    lineStrong: 'rgba(255,255,255,0.28)',
+
+    shadow: 'rgba(0,0,0,0.32)',
+
+    playerBeak: '#f59e0b',
+
+    treeTop: '#2ecc71',
+    treeSide: '#22a85b',
+    trunkTop: '#8b5a2b',
+    trunkSide: '#6f4420',
+
+    logTop: '#9a5b2e',
+    logSide: '#7e4a25',
+
+    carTop: '#ef4444',
+    carSide: '#b91c1c',
+    car2Top: '#60a5fa',
+    car2Side: '#1d4ed8',
+    car3Top: '#f97316',
+    car3Side: '#c2410c',
+
+    trainTop: '#a3a3a3',
+    trainSide: '#6b7280',
+  };
+
+  // ===== Isometric projection =====
+  let tileW = TILE_BASE * DPR;
+  let tileH = TILE_BASE * 0.55 * DPR;
+  let heightPx = HEIGHT_UNIT * DPR;
+
+  function recalcTileScale() {
+    // scale based on viewport. Keep things readable on mobile.
+    const scale = clamp(Math.min(W / (980 * DPR), H / (650 * DPR)) * 1.05, 0.85, 1.35);
+    tileW = TILE_BASE * DPR * scale;
+    tileH = TILE_BASE * 0.55 * DPR * scale;
+    heightPx = HEIGHT_UNIT * DPR * scale;
+  }
+  recalcTileScale();
+
+  function isoRaw(wx, wz) {
+    return {
+      x: (wx - wz) * (tileW * 0.5),
+      y: (wx + wz) * (tileH * 0.5),
+    };
+  }
+
+  const camera = { x: 0.5, z: -3.5 };
+  function toScreen(wx, wz) {
+    const cam = isoRaw(camera.x, camera.z);
+    const p = isoRaw(wx, wz);
+    return {
+      x: p.x - cam.x + W * 0.5,
+      y: p.y - cam.y + H * 0.64,
+    };
+  }
+
+  // ===== Lane generation =====
+  const lanes = new Map(); // z -> lane
+  const laneOrder = [];
+
+  const LANE = {
+    GRASS: 'grass',
+    ROAD: 'road',
+    RIVER: 'river',
+    RAIL: 'rail',
+  };
+
+  function laneTypeProb(z) {
+    const t = clamp(z / 60, 0, 1);
+    const pRoad = lerp(0.34, 0.44, t);
+    const pRiver = lerp(0.12, 0.22, t);
+    const pRail = lerp(0.05, 0.12, t);
+    const pGrass = 1 - (pRoad + pRiver + pRail);
+    return { pGrass, pRoad, pRiver, pRail };
+  }
+
+  function pickLaneType(z, prevTypes) {
+    const recent = prevTypes.slice(-4);
+    const streak = recent.length && recent.every(t => t === recent[0]);
+    const last = prevTypes[prevTypes.length - 1] || LANE.GRASS;
+    const { pGrass, pRoad, pRiver, pRail } = laneTypeProb(z);
+
+    let weights = [
+      { t: LANE.GRASS, w: pGrass },
+      { t: LANE.ROAD,  w: pRoad },
+      { t: LANE.RIVER, w: pRiver },
+      { t: LANE.RAIL,  w: pRail },
+    ];
+
+    weights = weights.map(o => ({ ...o, w: (o.t === last ? o.w * 0.72 : o.w) }));
+    if (streak) weights = weights.map(o => ({ ...o, w: (o.t === last ? o.w * 0.05 : o.w) }));
+    if (last === LANE.RIVER) weights = weights.map(o => ({ ...o, w: (o.t === LANE.RAIL ? o.w * 0.6 : o.w) }));
+
+    const sum = weights.reduce((s, o) => s + o.w, 0);
+    let r = Math.random() * sum;
+    for (const o of weights) {
+      r -= o.w;
+      if (r <= 0) return o.t;
+    }
+    return LANE.GRASS;
+  }
+
+  function makeGrassLane(z) {
+    const trees = new Set();
+    const density = clamp(0.12 + z * 0.002, 0.12, 0.28);
+
+    for (let x = -WORLD_HALF; x <= WORLD_HALF; x++) {
+      if (Math.random() < density) trees.add(x);
+    }
+    const openings = new Set([0, randi(-2, 2), randi(-4, 4)]);
+    for (const o of openings) trees.delete(o);
+
+    return { z, type: LANE.GRASS, trees };
+  }
+
+  function makeRoadLane(z) {
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const speed = rand(2.2, 4.6) * (1 + clamp((z - 10) / 140, 0, 0.65));
+    const vehicles = [];
+
+    const palette = [
+      { top: COLORS.carTop,  side: COLORS.carSide },
+      { top: COLORS.car2Top, side: COLORS.car2Side },
+      { top: COLORS.car3Top, side: COLORS.car3Side },
+    ];
+
+    // Traffic pattern: bursts of cars, then a guaranteed "no-spawn" gap.
+    // During the gap, we also wait until the playable road area is clear so crossing is possible.
+    const flowDur = rand(2.2, 4.6) * (1 - clamp((z - 10) / 220, 0, 0.25));
+    const gapMin = rand(0.9, 1.6);
+
+    return {
+      z,
+      type: LANE.ROAD,
+      dir,
+      speed,
+      vehicles,
+      palette,
+      phase: 'flow',          // 'flow' | 'gap'
+      phaseTimer: rand(0.6, flowDur),
+      flowRange: [2.2, 4.8],
+      gapMin,
+      gapTimer: 0,
+      spawnTimer: rand(0.15, 0.55),
+    };
+  }
+
+  function makeRiverLane(z) {
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const speed = rand(1.2, 2.6) * (1 + clamp((z - 15) / 170, 0, 0.55));
+    const logs = [];
+
+    const spawnT = rand(0.35, 0.85);
+    return { z, type: LANE.RIVER, dir, speed, logs, spawnT, spawnTimer: rand(0.1, 0.5) };
+  }
+
+  function makeRailLane(z) {
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const speed = rand(8.5, 11.5) * (1 + clamp((z - 30) / 180, 0, 0.40));
+
+    const minGap = rand(5.2, 8.2);
+    const warnTime = 1.35;
+
+    return {
+      z,
+      type: LANE.RAIL,
+      dir,
+      speed,
+      state: 'idle',
+      timer: rand(2.0, minGap),
+      minGap,
+      warnTime,
+      trainX: (dir === 1 ? -WORLD_HALF - 20 : WORLD_HALF + 20),
+      trainLen: randi(18, 26),
+    };
+  }
+
+  function createLane(z, prevTypes) {
+    if (z <= 0) return makeGrassLane(z);
+
+    const t = pickLaneType(z, prevTypes);
+    if (t === LANE.GRASS) return makeGrassLane(z);
+    if (t === LANE.ROAD) return makeRoadLane(z);
+    if (t === LANE.RIVER) return makeRiverLane(z);
+    return makeRailLane(z);
+  }
+
+  function getLane(z) {
+    if (lanes.has(z)) return lanes.get(z);
+
+    const prevTypes = [];
+    for (let dz = 1; dz <= 10; dz++) {
+      const l = lanes.get(z - dz);
+      if (l) prevTypes.unshift(l.type);
+    }
+
+    const lane = createLane(z, prevTypes);
+    lanes.set(z, lane);
+    laneOrder.push(z);
+    return lane;
+  }
+
+  function cleanupLanes(zMin, zMax) {
+    while (laneOrder.length) {
+      const z = laneOrder[0];
+      if (z >= zMin - 30) break;
+      lanes.delete(z);
+      laneOrder.shift();
+    }
+    for (let z = zMin; z <= zMax; z++) getLane(z);
+  }
+
+  // ===== Player =====
+  const player = {
+    x: 0, z: 0,
+    moving: false,
+    startX: 0, startZ: 0,
+    targetX: 0, targetZ: 0,
+    t: 0,
+    hopDur: 0.115,
+    hopHeight: 0.65,
+    dirX: 0, dirZ: 1,
+    alive: true,
+    onLog: false,
+    buffered: null,
+  };
+
+  let started = false;
+  let gameOver = false;
+  let score = 0;
+  let best = Number(localStorage.getItem('crossy_best') || 0);
+  $best.textContent = String(best);
+
+  function showOverlay(show) {
+    $overlay.style.display = show ? 'grid' : 'none';
+    $overlay.setAttribute('aria-hidden', show ? 'false' : 'true');
+  }
+
+  function resetGame({ showStartOverlay = true } = {}) {
+    lanes.clear();
+    laneOrder.length = 0;
+
+    player.x = 0.0;
+    player.z = 0.0;
+    player.moving = false;
+    player.t = 0;
+    player.dirX = 0;
+    player.dirZ = 1;
+    player.alive = true;
+    player.onLog = false;
+    player.buffered = null;
+
+    camera.x = 0.5;
+    camera.z = -3.5;
+
+    score = 0;
+    $score.textContent = String(score);
+
+    gameOver = false;
+    started = false;
+
+    cleanupLanes(-20, 40);
+
+    if (showStartOverlay) {
+      $panel.innerHTML = `
+        <h1>Crossy Road (Canvas)</h1>
+        <p>Hop forward forever. Avoid cars and trains. Don’t fall in the river — stand on logs to cross.</p>
+        <div class="row">
+          <span class="key"><span class="k">Arrows</span><span class="muted">/ WASD</span> move</span>
+          <span class="key"><span class="k">Swipe</span> move</span>
+          <span class="key"><span class="k">R</span> restart</span>
+          <span class="key"><span class="k">Enter</span> start</span>
+        </div>
+        <p style="margin-top:12px; opacity:0.8; font-size:12px;">Tip: You can move sideways or backward to dodge. Logs carry you, so keep your balance.</p>
+      `;
+      showOverlay(true);
+    } else {
+      showOverlay(false);
+    }
+  }
+
+  function startGame() {
+    if (started && !gameOver) return;
+    started = true;
+    gameOver = false;
+    showOverlay(false);
+  }
+
+  function endGame(reason) {
+    if (gameOver) return;
+    gameOver = true;
+    player.alive = false;
+
+    best = Math.max(best, score);
+    localStorage.setItem('crossy_best', String(best));
+    $best.textContent = String(best);
+
+    $panel.innerHTML = `
+      <h1>Game Over</h1>
+      <p>${reason}</p>
+      <div class="row">
+        <span class="key"><span class="k">Score</span> <span class="muted">${score}</span></span>
+        <span class="key"><span class="k">Best</span> <span class="muted">${best}</span></span>
+        <span class="key"><span class="k">R</span> restart</span>
+        <span class="key"><span class="k">Enter</span> play again</span>
+      </div>
+      <p style="margin-top:12px; opacity:0.8; font-size:12px;">Tip: Watch the rail warning — the train is fast.</p>
+    `;
+    showOverlay(true);
+  }
+
+  function tileBlocked(x, z) {
+    const lane = getLane(Math.floor(z));
+    return lane.type === LANE.GRASS && lane.trees.has(Math.round(x));
+  }
+
+  function queueMove(dx, dz) {
+    if (!started) startGame();
+    if (gameOver) return;
+
+    if (player.moving) {
+      player.buffered = { dx, dz };
+      return;
+    }
+
+    const newX = Math.round(player.x) + dx;
+    const newZ = Math.round(player.z) + dz;
+
+    if (newX < -WORLD_HALF || newX > WORLD_HALF) return;
+    if (tileBlocked(newX, newZ)) return;
+
+    player.moving = true;
+    player.t = 0;
+    player.startX = player.x;
+    player.startZ = player.z;
+    player.targetX = newX;
+    player.targetZ = newZ;
+    player.dirX = dx;
+    player.dirZ = dz;
+  }
+
+  function applyCarry(dx) {
+    // Apply log carry smoothly, but prevent clipping into trees.
+    const target = player.x + dx;
+    const xClamped = clamp(target, -WORLD_HALF - 0.5, WORLD_HALF + 0.5);
+
+    // If the current lane is grass with a tree at the rounded position, nudge away from the tree.
+    const lane = getLane(Math.floor(player.z));
+    if (lane.type === LANE.GRASS && lane.trees.has(Math.round(xClamped))) {
+      const r = Math.round(xClamped);
+      if (!lane.trees.has(r + 1) && r + 1 <= WORLD_HALF) player.x = r + 0.49;
+      else if (!lane.trees.has(r - 1) && r - 1 >= -WORLD_HALF) player.x = r - 0.49;
+      else player.x = clamp(player.x, -WORLD_HALF, WORLD_HALF);
+      return;
+    }
+
+    player.x = xClamped;
+  }
+
+  function roadOccupiedInPlay(lane) {
+    // Treat the road as "clear" when no car overlaps the playable width.
+    const left = -WORLD_HALF - 0.5;
+    const right = WORLD_HALF + 1.5;
+    for (const v of lane.vehicles) {
+      const minX = (v.x + 0.5) - v.len * 0.5;
+      const maxX = (v.x + 0.5) + v.len * 0.5;
+      if (maxX > left && minX < right) return true;
+    }
+    return false;
+  }
+
+  // ===== Input =====
+  window.addEventListener('keydown', (e) => {
+    const k = e.key;
+    const lower = (k || '').toLowerCase();
+
+    if (k === 'Enter' || lower === 'enter') {
+      if (gameOver) resetGame({ showStartOverlay: false });
+      startGame();
+      return;
+    }
+
+    if (lower === 'r') {
+      resetGame({ showStartOverlay: false });
+      startGame();
+      return;
+    }
+
+    if (gameOver) return;
+
+    if (lower === 'arrowup' || lower === 'w') queueMove(0, 1);
+    else if (lower === 'arrowdown' || lower === 's') queueMove(0, -1);
+    else if (lower === 'arrowleft' || lower === 'a') queueMove(-1, 0);
+    else if (lower === 'arrowright' || lower === 'd') queueMove(1, 0);
+  });
+
+  // Swipe input
+  let touchStart = null;
+  function getTouchPos(evt) {
+    const t = evt.touches && evt.touches[0] ? evt.touches[0] : (evt.changedTouches && evt.changedTouches[0]);
+    if (!t) return null;
+    return { x: t.clientX, y: t.clientY, id: t.identifier ?? 0 };
+  }
+
+  window.addEventListener('touchstart', (e) => {
+    const p = getTouchPos(e);
+    if (!p) return;
+    touchStart = p;
+  }, { passive: false });
+
+  window.addEventListener('touchmove', (e) => {
+    if (!touchStart) return;
+    e.preventDefault();
+  }, { passive: false });
+
+  window.addEventListener('touchend', (e) => {
+    const p = getTouchPos(e);
+    if (!p || !touchStart) { touchStart = null; return; }
+
+    const dx = p.x - touchStart.x;
+    const dy = p.y - touchStart.y;
+    const adx = Math.abs(dx);
+    const ady = Math.abs(dy);
+
+    const thresh = 22;
+    if (adx < thresh && ady < thresh) {
+      if (gameOver) resetGame({ showStartOverlay: false });
+      startGame();
+      queueMove(0, 1);
+      touchStart = null;
+      return;
+    }
+
+    if (adx > ady) queueMove(dx > 0 ? 1 : -1, 0);
+    else queueMove(0, dy > 0 ? -1 : 1);
+
+    touchStart = null;
+  }, { passive: false });
+
+  window.addEventListener('mousedown', () => {
+    if (!started || gameOver) {
+      if (gameOver) resetGame({ showStartOverlay: false });
+      startGame();
+    }
+  }, { passive: true });
+
+  // ===== Simulation update =====
+  function updateLane(lane, dt) {
+    if (lane.type === LANE.ROAD) {
+      // Move vehicles first (so "is the road clear" reflects what you see).
+      for (const v of lane.vehicles) v.x += lane.dir * lane.speed * dt;
+      lane.vehicles = lane.vehicles.filter(v => v.x > -WORLD_HALF - 10 && v.x < WORLD_HALF + 10);
+
+      if (lane.phase === 'flow') {
+        lane.phaseTimer -= dt;
+        lane.spawnTimer -= dt;
+
+        // Spawn 0..n vehicles (dt can be large on slow frames)
+        let safety = 0;
+        while (lane.spawnTimer <= 0 && safety++ < 6) {
+          const len = choice([1.6, 2.0, 2.5, 3.0]);
+          const palette = choice(lane.palette);
+
+          const x0 = (lane.dir === 1)
+            ? (-WORLD_HALF - len - rand(0.6, 1.8))
+            : (WORLD_HALF + len + rand(0.6, 1.8));
+
+          lane.vehicles.push({ x: x0, len, top: palette.top, side: palette.side, seed: Math.random() * 1000 });
+
+          // Enforce spacing: time headway scales with vehicle length + extra gap distance.
+          const gapDist = rand(1.6, 3.4); // world-units between cars (bigger = more openings)
+          const headway = (len + gapDist) / lane.speed;
+          lane.spawnTimer += clamp(headway + rand(0.05, 0.18), 0.22, 1.25);
+        }
+
+        // End of burst → switch to gap mode (no spawns) so the player gets crossing windows.
+        if (lane.phaseTimer <= 0) {
+          lane.phase = 'gap';
+          lane.gapTimer = lane.gapMin;
+        }
+      } else {
+        // GAP: no spawning. Wait at least gapMin seconds AND until the playable road is clear.
+        lane.gapTimer -= dt;
+        const occupied = roadOccupiedInPlay(lane);
+        if (lane.gapTimer <= 0 && !occupied) {
+          lane.phase = 'flow';
+          lane.gapMin = rand(0.9, 1.7);
+          const flowDur = rand(lane.flowRange[0], lane.flowRange[1]) * (1 - clamp((lane.z - 10) / 240, 0, 0.25));
+          lane.phaseTimer = flowDur;
+          lane.spawnTimer = rand(0.15, 0.55);
+        }
+      }
+    }
+
+    if (lane.type === LANE.RIVER) {
+      lane.spawnTimer -= dt;
+      if (lane.spawnTimer <= 0) {
+        lane.spawnTimer += lane.spawnT;
+        lane.spawnT = rand(0.35, 0.90) * (1 / clamp(1 + (lane.speed - 1.2) * 0.10, 0.75, 1.22));
+
+        const len = choice([2.0, 2.5, 3.0, 3.5, 4.0]);
+        const x0 = (lane.dir === 1)
+          ? (-WORLD_HALF - len - rand(0.4, 1.5))
+          : (WORLD_HALF + len + rand(0.4, 1.5));
+        lane.logs.push({ x: x0, len, seed: Math.random() * 1000 });
+      }
+
+      for (const l of lane.logs) l.x += lane.dir * lane.speed * dt;
+      lane.logs = lane.logs.filter(l => l.x > -WORLD_HALF - 12 && l.x < WORLD_HALF + 12);
+    }
+
+    if (lane.type === LANE.RAIL) {
+      lane.timer -= dt;
+      if (lane.state === 'idle') {
+        if (lane.timer <= 0) {
+          lane.state = 'warn';
+          lane.timer = lane.warnTime;
+        }
+      } else if (lane.state === 'warn') {
+        if (lane.timer <= 0) {
+          lane.state = 'train';
+          lane.timer = 999;
+          lane.trainLen = randi(18, 26);
+          lane.trainX = (lane.dir === 1 ? -WORLD_HALF - lane.trainLen - 8 : WORLD_HALF + lane.trainLen + 8);
+        }
+      } else if (lane.state === 'train') {
+        lane.trainX += lane.dir * lane.speed * dt;
+        const done = lane.dir === 1
+          ? (lane.trainX > WORLD_HALF + lane.trainLen + 10)
+          : (lane.trainX < -WORLD_HALF - lane.trainLen - 10);
+        if (done) {
+          lane.state = 'idle';
+          lane.timer = rand(lane.minGap, lane.minGap + 3.0);
+        }
+      }
+    }
+  }
+
+  function updatePlayer(dt) {
+    player.onLog = false;
+
+    if (player.moving) {
+      player.t += dt / player.hopDur;
+      const t = clamp(player.t, 0, 1);
+      const e = easeOutCubic(t);
+
+      player.x = lerp(player.startX, player.targetX, e);
+      player.z = lerp(player.startZ, player.targetZ, e);
+
+      if (t >= 1) {
+        player.moving = false;
+        player.x = player.targetX;
+        player.z = player.targetZ;
+
+        if (player.buffered) {
+          const b = player.buffered;
+          player.buffered = null;
+          queueMove(b.dx, b.dz);
+        }
+      }
+    }
+
+    const zRounded = Math.floor(player.z + 0.0001);
+    score = Math.max(score, zRounded);
+    $score.textContent = String(score);
+
+    const lane = getLane(Math.floor(player.z));
+
+    if (player.x < -WORLD_HALF - 0.6 || player.x > WORLD_HALF + 0.6) {
+      endGame('You fell off the world.');
+      return;
+    }
+
+    if (lane.type === LANE.ROAD) {
+      const px = player.x + 0.5;
+      for (const v of lane.vehicles) {
+        const cx = v.x + 0.5;
+        const half = v.len * 0.5;
+        if (Math.abs(px - cx) < half * 0.92 && Math.abs(player.z - lane.z) < 0.6) {
+          endGame('SPLAT! A car got you.');
+          return;
+        }
+      }
+    }
+
+    if (lane.type === LANE.RAIL && lane.state === 'train') {
+      const px = player.x + 0.5;
+      const half = lane.trainLen * 0.5;
+      const cx = lane.trainX + 0.5;
+      const onSameRow = Math.abs(player.z - lane.z) < 0.65;
+      if (onSameRow && Math.abs(px - cx) < half * 0.92) {
+        endGame('WHAM! You got hit by the train.');
+        return;
+      }
+    }
+
+    if (lane.type === LANE.RIVER) {
+      // FIX: Don't drown while mid-hop. Only evaluate drowning once the hop finishes.
+      // This prevents "jumping off a log" from killing you during the transition.
+      if (player.moving) {
+        // Optional: keep onLog indicator if you're currently above a log mid-hop.
+        const px = player.x + 0.5;
+        for (const l of lane.logs) {
+          const cx = l.x + 0.5;
+          const half = l.len * 0.5;
+          if (Math.abs(px - cx) < half * 0.92 && Math.abs(player.z - lane.z) < 0.65) {
+            player.onLog = true;
+            break;
+          }
+        }
+        return;
+      }
+
+      const px = player.x + 0.5;
+      let carried = 0;
+      let onLog = false;
+      for (const l of lane.logs) {
+        const cx = l.x + 0.5;
+        const half = l.len * 0.5;
+        if (Math.abs(px - cx) < half * 0.92 && Math.abs(player.z - lane.z) < 0.65) {
+          onLog = true;
+          carried = lane.dir * lane.speed;
+          break;
+        }
+      }
+
+      if (!onLog) {
+        endGame('Splash… you fell in the river.');
+        return;
+      }
+
+      player.onLog = true;
+      applyCarry(carried * dt);
+    }
+  }
+
+  // ===== Drawing helpers =====
+  function clear() {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, COLORS.bg2);
+    g.addColorStop(1, COLORS.bg1);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  function poly(points, fill, stroke = null, lineWidth = 1) {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+    ctx.closePath();
+    if (fill) {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+    if (stroke) {
+      ctx.strokeStyle = stroke;
+      ctx.lineWidth = lineWidth;
+      ctx.stroke();
+    }
+  }
+
+  function drawTile(tx, tz, top, side, edge) {
+    const p0 = toScreen(tx, tz);
+    const p1 = toScreen(tx + 1, tz);
+    const p2 = toScreen(tx + 1, tz + 1);
+    const p3 = toScreen(tx, tz + 1);
+
+    poly([p0, p1, p2, p3], top, edge, 1);
+
+    const h = heightPx * 0.28;
+    const p2b = { x: p2.x, y: p2.y + h };
+    const p3b = { x: p3.x, y: p3.y + h };
+    poly([p3, p2, p2b, p3b], side);
+
+    const p0b = { x: p0.x, y: p0.y + h };
+    poly([p0, p3, p3b, p0b], side);
+  }
+
+  function drawDashedRoadMarks(tx, tz) {
+    const p0 = toScreen(tx + 0.15, tz + 0.50);
+    const p1 = toScreen(tx + 0.85, tz + 0.50);
+    ctx.strokeStyle = COLORS.line;
+    ctx.lineWidth = Math.max(1, DPR);
+    ctx.setLineDash([6 * DPR, 6 * DPR]);
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y);
+    ctx.lineTo(p1.x, p1.y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function drawWaterTileDetail(tx, tz, time) {
+    // A few animated wave strokes so the river reads instantly as water
+    const base = toScreen(tx, tz);
+    const p1 = toScreen(tx + 1, tz);
+    const p3 = toScreen(tx, tz + 1);
+
+    const dx = (p1.x - base.x);
+    const dy = (p1.y - base.y);
+    const ex = (p3.x - base.x);
+    const ey = (p3.y - base.y);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = Math.max(1, DPR);
+
+    const phase = time * 1.8 + (tx * 0.8 + tz * 0.6);
+    for (let i = 0; i < 2; i++) {
+      const u = (0.22 + i * 0.34) + 0.03 * Math.sin(phase + i * 1.7);
+      const v = (0.25 + i * 0.28) + 0.03 * Math.cos(phase + i * 1.3);
+      const cx = base.x + dx * u + ex * v;
+      const cy = base.y + dy * u + ey * v;
+      const w = 10 * DPR;
+      ctx.beginPath();
+      ctx.moveTo(cx - w, cy + 0.8 * DPR);
+      ctx.quadraticCurveTo(cx, cy - 2.3 * DPR, cx + w, cy + 0.8 * DPR);
+      ctx.stroke();
+    }
+  }
+
+  function drawRails(tx, tz, blinking) {
+    // sleepers
+    const pA = toScreen(tx + 0.12, tz + 0.25);
+    const pB = toScreen(tx + 0.88, tz + 0.25);
+    const pC = toScreen(tx + 0.12, tz + 0.75);
+    const pD = toScreen(tx + 0.88, tz + 0.75);
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = Math.max(1, DPR);
+
+    ctx.beginPath();
+    ctx.moveTo(pA.x, pA.y);
+    ctx.lineTo(pB.x, pB.y);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(pC.x, pC.y);
+    ctx.lineTo(pD.x, pD.y);
+    ctx.stroke();
+
+    // rail lines (two thin parallel lines)
+    const r0 = toScreen(tx + 0.02, tz + 0.18);
+    const r1 = toScreen(tx + 0.98, tz + 0.18);
+    const r2 = toScreen(tx + 0.02, tz + 0.82);
+    const r3 = toScreen(tx + 0.98, tz + 0.82);
+    ctx.strokeStyle = 'rgba(220,220,220,0.12)';
+    ctx.lineWidth = Math.max(1, DPR);
+    ctx.beginPath();
+    ctx.moveTo(r0.x, r0.y);
+    ctx.lineTo(r1.x, r1.y);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(r2.x, r2.y);
+    ctx.lineTo(r3.x, r3.y);
+    ctx.stroke();
+
+    // warning lights
+    if (blinking) {
+      const pL = toScreen(tx + 0.08, tz + 0.50);
+      const pR = toScreen(tx + 0.92, tz + 0.50);
+      ctx.fillStyle = 'rgba(245,158,11,0.70)';
+      ctx.beginPath();
+      ctx.arc(pL.x, pL.y, 2.4 * DPR, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(pR.x, pR.y, 2.4 * DPR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawShadowAt(wx, wz, r) {
+    const p = toScreen(wx, wz);
+    ctx.fillStyle = COLORS.shadow;
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y + 6 * DPR, r, r * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawBlock(wx, wz, w, d, h, top, side, edge = null) {
+    const x0 = wx;
+    const z0 = wz;
+    const x1 = wx + w;
+    const z1 = wz + d;
+
+    const p0 = toScreen(x0, z0);
+    const p1 = toScreen(x1, z0);
+    const p2 = toScreen(x1, z1);
+    const p3 = toScreen(x0, z1);
+
+    const hh = h;
+    const q0 = { x: p0.x, y: p0.y - hh };
+    const q1 = { x: p1.x, y: p1.y - hh };
+    const q2 = { x: p2.x, y: p2.y - hh };
+    const q3 = { x: p3.x, y: p3.y - hh };
+
+    poly([p2, p3, q3, q2], side);
+    poly([p1, p2, q2, q1], side);
+    poly([q0, q1, q2, q3], top, edge, edge ? Math.max(1, DPR) : 1);
+  }
+
+  // ===== Recognizable object rendering =====
+  function drawWheelScreen(wx, wz, yLift, r) {
+    const p = toScreen(wx, wz);
+    ctx.fillStyle = 'rgba(15,23,42,0.95)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y - yLift, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = Math.max(1, DPR);
+    ctx.stroke();
+
+    // hub
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.beginPath();
+    ctx.arc(p.x, p.y - yLift, r * 0.35, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawHeadlight(wx, wz, yLift) {
+    const p = toScreen(wx, wz);
+    const x = p.x;
+    const y = p.y - yLift;
+
+    const g = ctx.createRadialGradient(x, y, 0, x, y, 12 * DPR);
+    g.addColorStop(0, 'rgba(253,224,71,0.65)');
+    g.addColorStop(1, 'rgba(253,224,71,0.0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, y, 12 * DPR, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(253,224,71,0.9)';
+    ctx.beginPath();
+    ctx.arc(x, y, 2.2 * DPR, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawCarDetailed(v, z, dir, time) {
+    const wob = Math.sin(time * 2.2 + v.seed) * (0.8 * DPR);
+    const baseH = heightPx * 0.30 + wob * 0.06;
+
+    const x0 = v.x + 0.5 - v.len * 0.5;
+    const bodyZ = z + 0.18;
+    const bodyD = 0.66;
+
+    drawShadowAt(v.x + 0.5, z + 0.55, 13 * DPR);
+
+    // chassis
+    drawBlock(x0, bodyZ, v.len, bodyD, baseH, v.top, v.side);
+
+    // cabin (glass) closer to the front
+    const cabLen = Math.max(0.86, v.len * 0.55);
+    const cabX = dir === 1 ? (x0 + v.len * 0.14) : (x0 + v.len - cabLen - v.len * 0.14);
+    drawBlock(cabX, z + 0.26, cabLen, 0.54, heightPx * 0.22 + wob * 0.05,
+      'rgba(147,197,253,0.55)', 'rgba(59,130,246,0.38)');
+
+    // roof rack / accent
+    drawBlock(cabX + 0.10, z + 0.33, cabLen * 0.62, 0.08, heightPx * 0.10 + wob * 0.03,
+      'rgba(255,255,255,0.12)', 'rgba(255,255,255,0.08)');
+
+    // wheels (two visible wheels near the viewer edge)
+    const wheelY = baseH * 0.10;
+    const frontX = dir === 1 ? (x0 + v.len - 0.30) : (x0 + 0.30);
+    const backX  = dir === 1 ? (x0 + 0.30) : (x0 + v.len - 0.30);
+    drawWheelScreen(frontX, z + 0.82, wheelY, 4.1 * DPR);
+    drawWheelScreen(backX,  z + 0.82, wheelY, 4.1 * DPR);
+
+    // headlights at the front corners
+    const frontEdgeX = dir === 1 ? (x0 + v.len - 0.05) : (x0 + 0.05);
+    drawHeadlight(frontEdgeX, z + 0.28, baseH * 0.55);
+    drawHeadlight(frontEdgeX, z + 0.74, baseH * 0.55);
+
+    // windshield highlight
+    const p = toScreen(v.x + 0.5, z + 0.35);
+    ctx.fillStyle = 'rgba(255,255,255,0.16)';
+    ctx.beginPath();
+    ctx.ellipse(p.x, p.y - heightPx * 0.22, 7.5 * DPR, 4.3 * DPR, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  function drawLogDetailed(l, z, dir, time) {
+    const wob = Math.sin(time * 1.6 + l.seed) * (0.9 * DPR);
+    const baseH = heightPx * 0.24 + wob * 0.10;
+
+    const x0 = l.x + 0.5 - l.len * 0.5;
+    drawShadowAt(l.x + 0.5, z + 0.55, 14 * DPR);
+    drawBlock(x0, z + 0.22, l.len, 0.56, baseH, COLORS.logTop, COLORS.logSide);
+
+    // end caps
+    const capLift = baseH * 0.85;
+    for (const sx of [x0 + 0.10, x0 + l.len - 0.10]) {
+      const p = toScreen(sx, z + 0.50);
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      ctx.beginPath();
+      ctx.ellipse(p.x, p.y - capLift, 5.2 * DPR, 3.2 * DPR, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.18)';
+      ctx.lineWidth = Math.max(1, DPR);
+      ctx.stroke();
+    }
+
+    // bark lines
+    ctx.strokeStyle = 'rgba(0,0,0,0.16)';
+    ctx.lineWidth = Math.max(1, DPR);
+    for (let i = 0; i < 3; i++) {
+      const t = (i + 1) / 4;
+      const px0 = toScreen(x0 + l.len * t, z + 0.26);
+      const px1 = toScreen(x0 + l.len * t, z + 0.74);
+      ctx.beginPath();
+      ctx.moveTo(px0.x, px0.y - baseH * 0.80);
+      ctx.lineTo(px1.x, px1.y - baseH * 0.72);
+      ctx.stroke();
+    }
+
+    // tiny foam around the log to sell water motion
+    const foam = toScreen(l.x + 0.5, z + 0.50);
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = Math.max(1, DPR);
+    ctx.beginPath();
+    ctx.arc(foam.x, foam.y - baseH * 0.40, 10 * DPR, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  function drawTrainDetailed(lane, z) {
+    const len = lane.trainLen;
+    const xCenter = lane.trainX + 0.5;
+
+    drawShadowAt(lane.trainX + 0.5, z + 0.58, 22 * DPR);
+
+    // main body
+    drawBlock(lane.trainX + 0.5 - len * 0.5, z + 0.10, len, 0.82, heightPx * 0.64, COLORS.trainTop, COLORS.trainSide);
+
+    // stripe
+    const p0 = toScreen(lane.trainX + 0.5 - len * 0.5 + 0.25, z + 0.25);
+    const p1 = toScreen(lane.trainX + 0.5 + len * 0.5 - 0.25, z + 0.25);
+    ctx.strokeStyle = 'rgba(245,158,11,0.62)';
+    ctx.lineWidth = 3 * DPR;
+    ctx.beginPath();
+    ctx.moveTo(p0.x, p0.y - heightPx * 0.30);
+    ctx.lineTo(p1.x, p1.y - heightPx * 0.30);
+    ctx.stroke();
+
+    // roof windows/vents (repeated small blocks)
+    for (let i = 0.8; i < len - 0.8; i += 1.2) {
+      const wx = (lane.trainX + 0.5 - len * 0.5) + i;
+      drawBlock(wx - 0.18, z + 0.20, 0.36, 0.22, heightPx * 0.16,
+        'rgba(191,219,254,0.55)', 'rgba(59,130,246,0.22)');
+    }
+
+    // engine nose at the front
+    const frontX = lane.dir === 1 ? (lane.trainX + 0.5 + len * 0.5 - 0.9) : (lane.trainX + 0.5 - len * 0.5 + 0.2);
+    drawBlock(frontX, z + 0.06, 0.90, 0.90, heightPx * 0.72,
+      'rgba(229,231,235,0.95)', 'rgba(107,114,128,0.95)');
+
+    // headlight glow
+    const lightX = lane.dir === 1 ? (lane.trainX + 0.5 + len * 0.5 - 0.05) : (lane.trainX + 0.5 - len * 0.5 + 0.05);
+    drawHeadlight(lightX, z + 0.50, heightPx * 0.55);
+
+    // subtle motion shimmer
+    const shimmer = toScreen(xCenter, z + 0.50);
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    ctx.lineWidth = Math.max(1, DPR);
+    ctx.beginPath();
+    ctx.ellipse(shimmer.x, shimmer.y - heightPx * 0.70, 26 * DPR, 10 * DPR, 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // ===== Rendering =====
+  function render(time) {
+    clear();
+    recalcTileScale();
+
+    const camZ = camera.z;
+    const zMin = Math.floor(camZ) - 10;
+    const zMax = Math.floor(camZ) + 34;
+    cleanupLanes(zMin - 6, zMax + 6);
+
+    // Tiles
+    for (let z = zMax; z >= zMin; z--) {
+      const lane = getLane(z);
+      for (let x = -WORLD_HALF; x <= WORLD_HALF; x++) {
+        if (lane.type === LANE.GRASS) {
+          drawTile(x, z, COLORS.grassTop, COLORS.grassSide, COLORS.grassEdge);
+          // little grass specks
+          if ((x + z) % 3 === 0) {
+            const p = toScreen(x + 0.55, z + 0.55);
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            ctx.beginPath();
+            ctx.arc(p.x, p.y - 1.2 * DPR, 1.4 * DPR, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        } else if (lane.type === LANE.ROAD) {
+          drawTile(x, z, COLORS.roadTop, COLORS.roadSide, COLORS.roadEdge);
+          if (x % 2 === 0) drawDashedRoadMarks(x, z);
+          // curb hint
+          if (x === -WORLD_HALF || x === WORLD_HALF) {
+            const a = toScreen(x + (x === -WORLD_HALF ? 0.02 : 0.98), z + 0.06);
+            const b = toScreen(x + (x === -WORLD_HALF ? 0.02 : 0.98), z + 0.94);
+            ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+            ctx.lineWidth = Math.max(1, DPR);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+          }
+        } else if (lane.type === LANE.RIVER) {
+          drawTile(x, z, COLORS.riverTop, COLORS.riverSide, COLORS.riverEdge);
+          drawWaterTileDetail(x, z, time);
+        } else {
+          drawTile(x, z, COLORS.railTop, COLORS.railSide, COLORS.railEdge);
+          const blinking = lane.state === 'warn' && (Math.floor(time * 10) % 2 === 0);
+          if (x % 2 === 0) drawRails(x, z, blinking);
+        }
+      }
+    }
+
+    // Objects list
+    const sprites = [];
+
+    for (let z = zMin; z <= zMax; z++) {
+      const lane = getLane(z);
+
+      if (lane.type === LANE.GRASS) {
+        for (const tx of lane.trees) {
+          sprites.push({
+            depth: (tx + 0.5) + (z + 0.5),
+            draw: () => {
+              drawShadowAt(tx + 0.5, z + 0.5, 9 * DPR);
+              drawBlock(tx + 0.34, z + 0.36, 0.32, 0.32, heightPx * 0.35, COLORS.trunkTop, COLORS.trunkSide);
+              drawBlock(tx + 0.18, z + 0.20, 0.64, 0.64, heightPx * 0.80, COLORS.treeTop, COLORS.treeSide);
+              // leaf sparkle
+              const p = toScreen(tx + 0.50, z + 0.50);
+              ctx.fillStyle = 'rgba(255,255,255,0.10)';
+              ctx.beginPath();
+              ctx.arc(p.x + 4 * DPR, p.y - heightPx * 0.72, 1.6 * DPR, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          });
+        }
+      }
+
+      if (lane.type === LANE.ROAD) {
+        for (const v of lane.vehicles) {
+          sprites.push({
+            depth: (v.x + 0.5) + (z + 0.6),
+            draw: () => drawCarDetailed(v, z, lane.dir, time)
+          });
+        }
+      }
+
+      if (lane.type === LANE.RIVER) {
+        for (const l of lane.logs) {
+          sprites.push({
+            depth: (l.x + 0.5) + (z + 0.62),
+            draw: () => drawLogDetailed(l, z, lane.dir, time)
+          });
+        }
+      }
+
+      if (lane.type === LANE.RAIL && lane.state === 'train') {
+        sprites.push({
+          depth: (lane.trainX + 0.5) + (z + 0.75),
+          draw: () => drawTrainDetailed(lane, z)
+        });
+      }
+    }
+
+    // Player sprite
+    const hopT = player.moving ? clamp(player.t, 0, 1) : 0;
+    const hopArc = player.moving ? Math.sin(hopT * Math.PI) : 0;
+    const lift = hopArc * heightPx * player.hopHeight;
+
+    sprites.push({
+      depth: (player.x + 0.5) + (player.z + 0.9) + (player.moving ? 0.05 : 0),
+      draw: () => {
+        drawShadowAt(player.x + 0.5, player.z + 0.62, 11 * DPR);
+
+        // Chicken-like voxel model
+        const bodyTop = '#f8fafc';
+        const bodySide = '#dbe4ee';
+        const wingTop = '#eef2f7';
+        const wingSide = '#cbd5e1';
+
+        // Body
+        drawBlock(player.x + 0.18, player.z + 0.24, 0.64, 0.54, heightPx * 0.56 + lift, bodyTop, bodySide);
+
+        // Wings
+        drawBlock(player.x + 0.10, player.z + 0.30, 0.18, 0.36, heightPx * 0.32 + lift, wingTop, wingSide);
+        drawBlock(player.x + 0.72, player.z + 0.30, 0.18, 0.36, heightPx * 0.32 + lift, wingTop, wingSide);
+
+        // Tail
+        const tailX = (player.x + 0.5 - player.dirX * 0.22) - 0.12;
+        const tailZ = (player.z + 0.52 - player.dirZ * 0.22) - 0.10;
+        drawBlock(tailX, tailZ, 0.24, 0.20, heightPx * 0.28 + lift, '#f1f5f9', '#cbd5e1');
+
+        // Head
+        const headX = player.x + 0.34 + player.dirX * 0.02;
+        const headZ = player.z + 0.05 + player.dirZ * 0.02;
+        drawBlock(headX, headZ, 0.32, 0.32, heightPx * 0.36 + lift, '#ffffff', '#e5e7eb');
+
+        // Comb
+        drawBlock(headX + 0.06, headZ - 0.02, 0.20, 0.10, heightPx * 0.16 + lift, '#ef4444', '#b91c1c');
+        drawBlock(headX + 0.12, headZ - 0.06, 0.14, 0.08, heightPx * 0.13 + lift, '#f87171', '#b91c1c');
+
+        // Legs
+        drawBlock(player.x + 0.35, player.z + 0.76, 0.08, 0.14, heightPx * 0.18, '#fbbf24', '#d97706');
+        drawBlock(player.x + 0.57, player.z + 0.76, 0.08, 0.14, heightPx * 0.18, '#fbbf24', '#d97706');
+
+        // Beak
+        const beak = toScreen(player.x + 0.5 + player.dirX * 0.20, player.z + 0.20 + player.dirZ * 0.20);
+        const bx = beak.x;
+        const by = beak.y - (heightPx * 0.58 + lift);
+        ctx.fillStyle = COLORS.playerBeak;
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(bx + (player.dirX * 4 - player.dirZ * 2) * DPR, by + (player.dirZ * 4 + player.dirX * 2) * DPR);
+        ctx.lineTo(bx + (player.dirX * 4 + player.dirZ * 2) * DPR, by + (player.dirZ * 4 - player.dirX * 2) * DPR);
+        ctx.closePath();
+        ctx.fill();
+
+        // Wattle
+        ctx.fillStyle = 'rgba(239,68,68,0.9)';
+        ctx.beginPath();
+        ctx.arc(bx - player.dirZ * 1.2 * DPR, by + 4.2 * DPR, 1.6 * DPR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Eyes
+        const e1 = toScreen(headX + 0.11, headZ + 0.11);
+        const e2 = toScreen(headX + 0.21, headZ + 0.11);
+        ctx.fillStyle = 'rgba(15,23,42,0.92)';
+        ctx.beginPath();
+        ctx.arc(e1.x, e1.y - (heightPx * 0.62 + lift), 1.5 * DPR, 0, Math.PI * 2);
+        ctx.arc(e2.x, e2.y - (heightPx * 0.62 + lift), 1.5 * DPR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // On-log hint
+        if (player.onLog && started && !gameOver) {
+          const p = toScreen(player.x + 0.5, player.z + 0.5);
+          ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+          ctx.lineWidth = 2 * DPR;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y - heightPx * 0.95, 10 * DPR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    });
+
+    // draw in depth order
+    sprites.sort((a, b) => a.depth - b.depth);
+    for (const s of sprites) s.draw();
+
+    // vignette
+    const vg = ctx.createRadialGradient(W * 0.5, H * 0.65, Math.min(W, H) * 0.15, W * 0.5, H * 0.65, Math.max(W, H) * 0.8);
+    vg.addColorStop(0, 'rgba(0,0,0,0)');
+    vg.addColorStop(1, 'rgba(0,0,0,0.28)');
+    ctx.fillStyle = vg;
+    ctx.fillRect(0, 0, W, H);
+
+    // rail warning text
+    const laneHere = getLane(Math.floor(player.z));
+    if (laneHere.type === LANE.RAIL && laneHere.state === 'warn' && !gameOver && started) {
+      ctx.save();
+      ctx.globalAlpha = 0.92;
+      ctx.fillStyle = 'rgba(245,158,11,0.90)';
+      ctx.font = `${Math.floor(16 * DPR)}px system-ui`;
+      const txt = 'TRAIN!';
+      const m = ctx.measureText(txt);
+      ctx.fillText(txt, W * 0.5 - m.width / 2, H * 0.18);
+      ctx.restore();
+    }
+  }
+
+  // ===== Main loop =====
+  let last = performance.now();
+  function frame(now) {
+    const dt = clamp((now - last) / 1000, 0, 0.033);
+    last = now;
+
+    // smooth camera follow
+    const targetCamX = player.x + 0.5;
+    const targetCamZ = (player.z + 0.5) - 4.2;
+    camera.x = lerp(camera.x, targetCamX, 1 - Math.pow(0.001, dt));
+    camera.z = lerp(camera.z, targetCamZ, 1 - Math.pow(0.001, dt));
+
+    if (started && !gameOver) {
+      const zMin = Math.floor(camera.z) - 12;
+      const zMax = Math.floor(camera.z) + 44;
+      cleanupLanes(zMin, zMax);
+
+      for (let z = zMin; z <= zMax; z++) updateLane(getLane(z), dt);
+      updatePlayer(dt);
+    }
+
+    render(now / 1000);
+    requestAnimationFrame(frame);
+  }
+
+  // ===== Smoke tests (non-intrusive) =====
+  function assert(cond, msg) {
+    if (!cond) console.error('[TEST FAIL]', msg);
+  }
+  function runSmokeTests() {
+    resetGame({ showStartOverlay: true });
+    assert($overlay.style.display === 'grid', 'overlay should be visible after resetGame(showStartOverlay=true)');
+    startGame();
+    assert($overlay.style.display === 'none', 'overlay should hide after startGame()');
+    resetGame({ showStartOverlay: false });
+    assert($overlay.style.display === 'none', 'overlay should stay hidden after resetGame(showStartOverlay=false)');
+    startGame();
+
+    // road gap logic: ensure we do not spawn during a gap phase
+    const testRoad = {
+      type: LANE.ROAD,
+      z: 10,
+      dir: 1,
+      speed: 3,
+      vehicles: [],
+      palette: [{ top: '#f00', side: '#900' }],
+      phase: 'gap',
+      gapMin: 1,
+      gapTimer: 1,
+      flowRange: [2.2, 4.8],
+      phaseTimer: 0,
+      spawnTimer: -1,
+    };
+    updateLane(testRoad, 0.5);
+    assert(testRoad.vehicles.length === 0, 'no vehicles should spawn during gap phase');
+
+    // when the road is clear and gap timer elapsed, it should transition back to flow
+    testRoad.gapTimer = -0.1;
+    updateLane(testRoad, 0.016);
+    assert(testRoad.phase === 'flow', 'road lane should return to flow once gap elapsed and road is clear');
+
+    // if road is occupied, it must NOT switch back to flow even if timer elapsed
+    testRoad.phase = 'gap';
+    testRoad.gapTimer = -0.1;
+    testRoad.vehicles.push({ x: 0, len: 2.5, top: '#f00', side: '#900', seed: 0 });
+    updateLane(testRoad, 0.016);
+    assert(testRoad.phase === 'gap', 'road lane should remain in gap while a vehicle occupies the playable area');
+
+    // river hop safety: jumping off a log should not drown mid-hop
+    lanes.clear();
+    laneOrder.length = 0;
+
+    const grass0 = { z: 0, type: LANE.GRASS, trees: new Set() };
+    const river1 = { z: 1, type: LANE.RIVER, dir: 1, speed: 2, logs: [{ x: -3, len: 10, seed: 0 }], spawnT: 999, spawnTimer: 999 };
+    const grass2 = { z: 2, type: LANE.GRASS, trees: new Set() };
+
+    lanes.set(0, grass0); laneOrder.push(0);
+    lanes.set(1, river1); laneOrder.push(1);
+    lanes.set(2, grass2); laneOrder.push(2);
+
+    gameOver = false;
+    started = true;
+    player.alive = true;
+
+    // simulate a hop from the log (z=1) onto the bank (z=2)
+    player.x = 0; player.z = 1;
+    player.moving = true;
+    player.startX = 0; player.startZ = 1;
+    player.targetX = 0; player.targetZ = 2;
+    player.t = 0;
+
+    updatePlayer(0.016);
+    assert(!gameOver, 'should not drown while hopping off a log');
+
+    // finish the hop; should land safely on grass
+    player.t = 0.99;
+    updatePlayer(0.016);
+    assert(!gameOver, 'should not drown after landing on grass');
+
+    // hop from grass into a river with NO log: survive mid-hop, drown on landing
+    lanes.set(1, { z: 1, type: LANE.RIVER, dir: 1, speed: 2, logs: [], spawnT: 999, spawnTimer: 999 });
+    gameOver = false;
+    player.alive = true;
+    player.x = 0; player.z = 0;
+    player.moving = true;
+    player.startX = 0; player.startZ = 0;
+    player.targetX = 0; player.targetZ = 1;
+    player.t = 0;
+
+    updatePlayer(0.016);
+    assert(!gameOver, 'should not drown mid-hop when entering river');
+
+    player.t = 0.99;
+    updatePlayer(0.016);
+    assert(gameOver, 'should drown when landing in river without a log');
+
+    // restore initial state for the real game experience
+    resetGame({ showStartOverlay: true });
+  }
+
+  // Initialize
+  resetGame({ showStartOverlay: true });
+  requestAnimationFrame(frame);
+  runSmokeTests();
+})();
+</script>
+</body>
+</html>
